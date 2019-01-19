@@ -234,3 +234,8 @@ if __name__ == '__main__':
     if args.elbo_decomp:
         elbo_decomposition(vae, dataset_loader)
     eval('plot_vs_gt_' + cpargs.dataset)(vae, dataset_loader.dataset, args.save, z_inds)
+
+
+def plot_vs_gt_celeba(vae, celeba_dataset, save, z_inds=None):
+    # no ground truth factors of variation...
+    pass

@@ -200,7 +200,8 @@ class SensVAE(nn.Module):
         if isinstance(self.x_dist, dist.Normal):
             x_params = x_params.sigmoid()  # model logit(img) as Normal
             x_params = torch.stack([x_params, torch.zeros_like(x_params)], -1)  # logsigma = 0
-            xs = self.x_dist.sample(params=x_params).sigmoid()
+            #xs = self.x_dist.sample(params=x_params).sigmoid()
+            xs = x_params
         return xs, x_params, a_recon, a_params
 
     # define a helper function for reconstructing images
@@ -227,6 +228,7 @@ class SensVAE(nn.Module):
         x = x.view(batch_size, self.n_chan, 64, 64)
         prior_params = self._get_prior_params(batch_size)
         x_recon, x_params, zs, z_params, a_recon, a_params = self.reconstruct_img(x)
+        #logpx = self.x_dist.log_density(utils.logit(x), params=x_params).view(batch_size, -1).sum(1)
         logpx = self.x_dist.log_density(x, params=x_params).view(batch_size, -1).sum(1)
         a_ = a[:, self.sens_idx]  # the attributes we care about modeling
         with torch.no_grad():
@@ -281,6 +283,7 @@ class SensVAE(nn.Module):
                     self.beta * (logqz - logqz_prodmarginals) - \
                     (1 - self.lamb) * (logqz_prodmarginals - logpz)
 
+        metrics.update(tc=(logqz - logqz_prodmarginals).detach().mean())  # total correlation
         return modified_elbo, elbo.detach(), metrics
 
 
@@ -325,6 +328,7 @@ win_samples = 'samples'
 win_test_reco = 'test_reco'
 win_latent_walk = 'latent_walk'
 win_train_elbo = 'train_elbo'
+win_train_tc = 'train_tc'
 
 
 def display_samples(model, x, vis):
@@ -341,9 +345,9 @@ def display_samples(model, x, vis):
     # plot the reconstructed distribution for the first 50 test images
     test_imgs = x[:50, :]
     _, reco_imgs, zs, _, _, _ = model.reconstruct_img(test_imgs)
-    if isinstance(model.x_dist, dist.Normal):
+    if isinstance(model.x_dist, dist.Normal):  # we plot the means only
         reco_imgs = reco_imgs.select(-1, 0)
-    reco_imgs = reco_imgs.sigmoid()
+    #reco_imgs = reco_imgs.sigmoid()
     #test_reco_imgs = torch.cat([
         #test_imgs.view(1, -1, 64, 64), reco_imgs.view(1, -1, 64, 64)], 0).transpose(0, 1)
 
@@ -384,6 +388,12 @@ def plot_elbo(train_elbo, vis):
     win_train_elbo = vis.line(torch.Tensor(train_elbo), 
             opts={'markers': True, 'title': win_train_elbo, 'caption': win_train_elbo}, 
             win=win_train_elbo)
+
+def plot_tc(train_tc, vis):
+    global win_train_tc
+    win_train_tc = vis.line(torch.Tensor(train_tc), 
+            opts={'markers': True, 'title': win_train_tc, 'caption': win_train_tc}, 
+            win=win_train_tc)
 
 
 def anneal_kl(args, vae, iteration):
@@ -427,7 +437,15 @@ def main():
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     args = parser.parse_args()
 
+    if not os.path.exists(args.save):
+        os.makedirs(args.save)
+
+    log_file = os.path.join(args.save, 'train.log')
+    if os.path.exists(log_file):
+        os.remove(log_file)
+
     print(vars(args))
+    print(vars(args), file=open(log_file, 'w'))
     #pdb.set_trace()
 
     torch.cuda.set_device(args.gpu)
@@ -462,6 +480,7 @@ def main():
         vis = visdom.Visdom(env=args.save, port=3776)
 
     train_elbo = []
+    train_tc = []
 
     # training loop
     dataset_size = len(train_loader.dataset)
@@ -469,6 +488,7 @@ def main():
     iteration = 0
     # initialize loss accumulator
     elbo_running_mean = utils.RunningAverageMeter()
+    tc_running_mean = utils.RunningAverageMeter()
     clf_acc_meters = {'clf_acc{}'.format(s): utils.RunningAverageMeter() for s in vae.sens_idx}
 
     while iteration < num_iterations:
@@ -495,6 +515,7 @@ def main():
                 raise ValueError('NaN spotted in objective.')
             obj.mean().mul(-1).backward()
             elbo_running_mean.update(elbo.mean().data.item())
+            tc_running_mean.update(metrics['tc'])
             for (s, meter), (_, acc) in zip(clf_acc_meters.items(), metrics.items()):
                 clf_acc_meters[s].update(acc.data.item())
             optimizer.step()
@@ -502,11 +523,15 @@ def main():
             # report training diagnostics
             if iteration % args.log_freq == 0:
                 train_elbo.append(elbo_running_mean.avg)
-                print('[iteration %03d] time: %.2f \tbeta %.2f \tlambda %.2f training ELBO: %.4f (%.4f)' % (
+                train_tc.append(tc_running_mean.avg)
+                msg = '[iteration %03d] time: %.2f \tbeta %.2f \tlambda %.2f training ELBO: %.4f (%.4f) training TC %.4f (%.4f)' % (
                     iteration, time.time() - batch_time, vae.beta, vae.lamb,
-                    elbo_running_mean.val, elbo_running_mean.avg))
+                    elbo_running_mean.val, elbo_running_mean.avg,
+                    tc_running_mean.val, tc_running_mean.avg)
                 for k, v in clf_acc_meters.items():
-                    print(k, v.avg)
+                    msg += ' {}: {:.2f}'.format(k, v.avg)
+                print(msg)
+                print(msg, file=open(log_file, 'a'))
 
                 vae.eval()
 
@@ -514,6 +539,7 @@ def main():
                 if args.visdom:
                     display_samples(vae, x, vis)
                     plot_elbo(train_elbo, vis)
+                    plot_tc(train_tc, vis)
 
                 utils.save_checkpoint({
                     'state_dict': vae.state_dict(),

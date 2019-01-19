@@ -71,3 +71,14 @@ def logsumexp(value, dim=None, keepdim=False):
             return m + math.log(sum_exp)
         else:
             return m + torch.log(sum_exp)
+
+
+def logit(value, eps=1e-9):
+    """https://en.wikipedia.org/wiki/Logit"""
+    with torch.no_grad():
+        if (value -  torch.clamp(value, 0.0, 1.0)).norm().item() > eps:
+            raise ValueError('invalid input value for logit function: {}'.format(value))
+    log_odd_pos = (value + eps).log()
+    log_odd_neg = (1 - value + eps).log()
+    log_odds = log_odd_pos - log_odd_neg
+    return log_odds

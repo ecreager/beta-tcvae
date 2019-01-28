@@ -401,6 +401,8 @@ def anneal_kl(args, vae, iteration):
         warmup_iter = 7000
     elif args.dataset == 'faces':
         warmup_iter = 2500
+    elif args.dataset == 'celeba':
+        warmup_iter = 2500
 
     if args.lambda_anneal:
         vae.lamb = max(0, 0.95 - 1 / warmup_iter * iteration)  # 1 --> 0
@@ -498,7 +500,7 @@ def main():
             iteration += 1
             batch_time = time.time()
             vae.train()
-            #anneal_kl(args, vae, iteration)
+            #anneal_kl(args, vae, iteration)  # TODO try annealing beta/beta_sens
             vae.beta = args.beta
             vae.beta_sens = args.beta_sens
             optimizer.zero_grad()

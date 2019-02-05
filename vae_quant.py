@@ -187,7 +187,10 @@ class SensVAE(nn.Module):
         x = x.view(x.size(0), self.n_chan, 64, 64)
         # use the encoder to get the parameters used to define q(z|x)
         z_params = self.encoder.forward(x).view(x.size(0), self.z_dim, self.q_dist.nparams)
-        #pdb.set_trace()
+        logvars = z_params.select(-1, 1)
+        print('logvar means {}, min {}'.format(
+            logvars.mean().item(), logvars.min().item()),
+            file=open('logvars-after.log', 'a'))
         # sample the latent code z
         zs = self.q_dist.sample(params=z_params)
         return zs, z_params
@@ -224,10 +227,9 @@ class SensVAE(nn.Module):
         metrics = {}
         # log p(x|z) + log p(z) - log q(z|x)
         batch_size = x.size(0)
-        #pdb.set_trace()
         x = x.view(batch_size, self.n_chan, 64, 64)
         prior_params = self._get_prior_params(batch_size)
-        x_recon, x_params, zs, z_params, a_recon, a_params = self.reconstruct_img(x)
+        x_recon, x_params, zbs, zb_params, a_recon, a_params = self.reconstruct_img(x)
         #logpx = self.x_dist.log_density(utils.logit(x), params=x_params).view(batch_size, -1).sum(1)
         logpx = self.x_dist.log_density(x, params=x_params).view(batch_size, -1).sum(1)
         a_ = a[:, self.sens_idx]  # the attributes we care about modeling
@@ -236,26 +238,38 @@ class SensVAE(nn.Module):
             for i, s in enumerate(self.sens_idx):
                 metrics.update({'clf_acc{}'.format(s): clf_accs[i]})
         logpa = self.a_dist.log_density(a_, params=a_params).view(batch_size, -1).sum(1)
-        logpz = self.prior_dist.log_density(zs, params=prior_params).view(batch_size, -1).sum(1)
-        logqz_condx = self.q_dist.log_density(zs, params=z_params).view(batch_size, -1).sum(1)
+        logpzb = self.prior_dist.log_density(zbs, params=prior_params).view(batch_size, -1).sum(1)
+        logqzb_condx = self.q_dist.log_density(zbs, params=zb_params).view(batch_size, -1).sum(1)
 
-        elbo = logpx + logpa + logpz - logqz_condx
+        elbo = logpx + logpa + logpzb - logqzb_condx
 
         if self.beta == 1 and self.include_mutinfo and self.lamb == 0:
             return elbo, elbo.detach(), metrics
 
         # compute log q(z) ~= log 1/(NM) sum_m=1^M q(z|x_m) = - log(MN) + logsumexp_m(q(z|x_m))
-        _logqz = self.q_dist.log_density(
-            zs.view(batch_size, 1, self.z_dim),
-            z_params.view(1, batch_size, self.z_dim, self.q_dist.nparams)
+        _logqzb = self.q_dist.log_density(
+            zbs.view(batch_size, 1, self.z_dim),
+            zb_params.view(1, batch_size, self.z_dim, self.q_dist.nparams)
         )
 
         if not self.mss:
             # minibatch weighted sampling
-            logqz_prodmarginals = (logsumexp(_logqz, dim=1, keepdim=False) - math.log(batch_size * dataset_size)).sum(1)
+            logqzb = (logsumexp(_logqzb.sum(2), dim=1, keepdim=False) - math.log(batch_size * dataset_size))  # = log q(z,b)
+            n_sens = len(self.sens_idx)
+            n_nonsens = self.z_dim - n_sens
+            mask = torch.zeros(1, 1, 100).byte()
+            mask[:, :, self.sens_idx] = 1
+            mask = mask.cuda(async=True)
+            _logqb = _logqzb.masked_select(mask) \
+                    .reshape(batch_size, batch_size, n_sens)  # sens latents
+            _logqz = _logqzb.masked_select(1 - mask) \
+                    .reshape(batch_size, batch_size, n_nonsens)  # nonsens latents
+            logqb_prodmarginals = (logsumexp(_logqb, dim=1, keepdim=False) - math.log(batch_size * dataset_size)).sum(1)
             logqz = (logsumexp(_logqz.sum(2), dim=1, keepdim=False) - math.log(batch_size * dataset_size))
+            logqzb_prodmarginals = logqz + logqb_prodmarginals # = log q(z) + sum_k log q(b_k)
         else:
             # minibatch stratified sampling
+            raise ValueError('minibatch stratified sampling not supported in this fork')
             logiw_matrix = Variable(self._log_importance_weight_matrix(batch_size, dataset_size).type_as(_logqz.data))
             logqz = logsumexp(logiw_matrix + _logqz.sum(2), dim=1, keepdim=False)
             logqz_prodmarginals = logsumexp(
@@ -264,26 +278,26 @@ class SensVAE(nn.Module):
         if not self.tcvae:
             if self.include_mutinfo:
                 modified_elbo = logpx + self.beta_sens * logpa - self.beta * (
-                    (logqz_condx - logpz) -
-                    self.lamb * (logqz_prodmarginals - logpz)
+                    (logqzb_condx - logpzb) -
+                    self.lamb * (logqzb_prodmarginals - logpzb)
                 )
             else:
                 modified_elbo = logpx + self.beta_sens * logpa - self.beta * (
-                    (logqz - logqz_prodmarginals) +
-                    (1 - self.lamb) * (logqz_prodmarginals - logpz)
+                    (logqzb - logqzb_prodmarginals) +
+                    (1 - self.lamb) * (logqzb_prodmarginals - logpzb)
                 )
         else:
             if self.include_mutinfo:
                 modified_elbo = logpx + self.beta_sens * logpa - \
-                    (logqz_condx - logqz) - \
-                    self.beta * (logqz - logqz_prodmarginals) - \
-                    (1 - self.lamb) * (logqz_prodmarginals - logpz)
+                    (logqzb_condx - logqzb) - \
+                    self.beta * (logqzb - logqzb_prodmarginals) - \
+                    (1 - self.lamb) * (logqzb_prodmarginals - logpzb)
             else:
                 modified_elbo = logpx + self.beta_sens * logpa - \
-                    self.beta * (logqz - logqz_prodmarginals) - \
-                    (1 - self.lamb) * (logqz_prodmarginals - logpz)
+                    self.beta * (logqzb - logqzb_prodmarginals) - \
+                    (1 - self.lamb) * (logqzb_prodmarginals - logpzb)
 
-        metrics.update(tc=(logqz - logqz_prodmarginals).detach().mean())  # total correlation
+        metrics.update(tc=(logqzb - logqzb_prodmarginals).detach().mean())  # total correlation
         return modified_elbo, elbo.detach(), metrics
 
 

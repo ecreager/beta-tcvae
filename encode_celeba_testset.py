@@ -81,6 +81,7 @@ if __name__ == '__main__':
     x_test = []
     a_test = []
     z_test = []
+    zs_test = []
 
     bar = tqdm(range(len(test_loader)))
     for i, (x, a) in enumerate(test_loader):
@@ -95,15 +96,17 @@ if __name__ == '__main__':
         x = Variable(x)
         a = Variable(a)
 
-        _, z_params = vae.encode(x)
+        zs, z_params = vae.encode(x)
         z_mu = z_params.select(-1, 0)
         z_test.append(z_mu.detach().cpu())
+        zs_test.append(zs.detach().cpu())
 
     x_test = torch.cat(x_test, 0).numpy()
     a_test = torch.cat(a_test, 0).numpy()
     z_test = torch.cat(z_test, 0).numpy()
+    zs_test = torch.cat(zs_test, 0).numpy()
 
 
-    np.savez(output_npz_filename, x=x_test, a=a_test, z=z_test, args=args)
+    np.savez(output_npz_filename, x=x_test, a=a_test, z=z_test, zs=zs_test, args=args)
     print('done encoding test set:\n', output_npz_filename)
 

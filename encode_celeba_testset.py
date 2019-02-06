@@ -1,3 +1,4 @@
+import argparse
 import os
 import pdb
 
@@ -61,43 +62,50 @@ def load_model_and_dataset(checkpt_filename):
     return vae, loader, test_loader, args
 
 
-ckpt ='sweep/beta100betasens500/checkpt-0078.pth'
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+            'encode celeb-a test set starting from a trained model checkpoint')
+    parser.add_argument('--ckpt', type=str, 
+            default='sweep/beta100betasens500/checkpt-0078.pth', 
+            help='path to model checkpoint')
+    args = parser.parse_args()
+    ckpt = args.ckpt
 
-vae, loader, test_loader, args = load_model_and_dataset(ckpt)
+    vae, loader, test_loader, args = load_model_and_dataset(ckpt)
 
-output_dir = os.path.splitext(ckpt)[0]
-if not os.path.exists(output_dir):
-    os.makedirs(output_dir)
-output_npz_filename = os.path.join(output_dir, 'encoded_test_set.npz')
+    output_dir = os.path.splitext(ckpt)[0]
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    output_npz_filename = os.path.join(output_dir, 'encoded_test_set.npz')
 
-x_test = []
-a_test = []
-z_test = []
+    x_test = []
+    a_test = []
+    z_test = []
 
-bar = tqdm(range(len(test_loader)))
-for i, (x, a) in enumerate(test_loader):
-    bar.update()
-    x_test.append(x)
-    a_test.append(a)
+    bar = tqdm(range(len(test_loader)))
+    for i, (x, a) in enumerate(test_loader):
+        bar.update()
+        x_test.append(x)
+        a_test.append(a)
 
-    x = x.cuda(async=True)
-    a = a.float()
-    a = a.cuda(async=True)
-    # wrap the mini-batch in a PyTorch Variable
-    x = Variable(x)
-    a = Variable(a)
+        x = x.cuda(async=True)
+        a = a.float()
+        a = a.cuda(async=True)
+        # wrap the mini-batch in a PyTorch Variable
+        x = Variable(x)
+        a = Variable(a)
 
-    _, z_params = vae.encode(x)
-    z_mu = z_params.select(-1, 0)
-    z_test.append(z_mu.detach().cpu())
+        _, z_params = vae.encode(x)
+        z_mu = z_params.select(-1, 0)
+        z_test.append(z_mu.detach().cpu())
 
-#pdb.set_trace()
+    #pdb.set_trace()
 
-x_test = torch.cat(x_test, 0).numpy()
-a_test = torch.cat(a_test, 0).numpy()
-z_test = torch.cat(z_test, 0).numpy()
+    x_test = torch.cat(x_test, 0).numpy()
+    a_test = torch.cat(a_test, 0).numpy()
+    z_test = torch.cat(z_test, 0).numpy()
 
 
-np.savez(output_npz_filename, x=x_test, a=a_test, z=z_test, args=args)
-print('done encoding test set:\n', output_npz_filename)
+    np.savez(output_npz_filename, x=x_test, a=a_test, z=z_test, args=args)
+    print('done encoding test set:\n', output_npz_filename)
 

@@ -9,7 +9,12 @@ def save_checkpoint(state, save, epoch):
         os.makedirs(save)
     filename = os.path.join(save, 'checkpt-%04d.pth' % epoch)
     torch.save(state, filename)
-
+    # delete old models from more than 10 epochs ago
+    n_checkpts_to_save = 10
+    old_checkpt = os.path.join(save, 
+            'checkpt-%04d.pth' % (epoch - n_checkpts_to_save))
+    if os.path.exists(old_checkpt):
+        os.remove(old_checkpt)
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""

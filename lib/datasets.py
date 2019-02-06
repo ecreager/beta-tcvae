@@ -84,16 +84,22 @@ class CelebA(torchvision.datasets.ImageFolder):
 
         if mode == 'train':
             self.samples = self.samples[self.train_range[0]:self.train_range[1]]
+            self.attr = self.attr[self.train_range[0]:self.train_range[1]]
         elif mode == 'validation':
             self.samples = self.samples[self.valid_range[0]:self.valid_range[1]]
+            self.attr = self.attr[self.valid_range[0]:self.valid_range[1]]
         elif mode == 'test':
             self.samples = self.samples[self.test_range[0]:self.test_range[1]]
+            self.attr = self.attr[self.test_range[0]:self.test_range[1]]
         elif mode == 'test_train':
             self.samples = self.samples[self.test_train_range[0]:self.test_train_range[1]]
+            self.attr = self.attr[self.test_train_range[0]:self.test_train_range[1]]
         elif mode == 'test_validation':
             self.samples = self.samples[self.test_valid_range[0]:self.test_valid_range[1]]
+            self.attr = self.attr[self.test_valid_range[0]:self.test_valid_range[1]]
         elif mode == 'test_test':
             self.samples = self.samples[self.test_test_range[0]:self.test_test_range[1]]
+            self.attr = self.attr[self.test_test_range[0]:self.test_test_range[1]]
         else:
             raise ValueError('bad mode')
         self.mode = mode

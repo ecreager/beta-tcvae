@@ -99,8 +99,6 @@ if __name__ == '__main__':
         z_mu = z_params.select(-1, 0)
         z_test.append(z_mu.detach().cpu())
 
-    #pdb.set_trace()
-
     x_test = torch.cat(x_test, 0).numpy()
     a_test = torch.cat(a_test, 0).numpy()
     z_test = torch.cat(z_test, 0).numpy()

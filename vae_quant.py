@@ -375,8 +375,25 @@ def display_samples(model, x, vis):
     
     #pdb.set_trace()
 
+    def red_frame(imgs):
+        n_pixels = 3  # width of frame
+        imgs[:, 0, :n_pixels, :] = 1.
+        imgs[:, 1, :n_pixels, :] = 0.
+        imgs[:, 2, :n_pixels, :] = 0.
+        imgs[:, 0, -n_pixels:, :] = 1.
+        imgs[:, 1, -n_pixels:, :] = 0.
+        imgs[:, 2, -n_pixels:, :] = 0.
+        imgs[:, 0, :, :n_pixels] = 1.
+        imgs[:, 1, :, :n_pixels] = 0.
+        imgs[:, 2, :, :n_pixels] = 0.
+        imgs[:, 0, :, -n_pixels:] = 1.
+        imgs[:, 1, :, -n_pixels:] = 0.
+        imgs[:, 2, :, -n_pixels:] = 0.
+        return imgs
+
     # plot latent walks (change one variable while all others stay the same)
-    zs = zs[0:3]
+    #zs = zs[0:3]
+    zs = zs[0].unsqueeze(0)
     batch_size, z_dim = zs.size()
     xs = []
     delta = torch.autograd.Variable(torch.linspace(-2, 2, 7), volatile=True).type_as(zs)
@@ -388,6 +405,8 @@ def display_samples(model, x, vis):
         zs_delta[:, :, i] = 0
         zs_walk = zs_delta + vec[None]
         xs_walk = model.decoder.forward(zs_walk.view(-1, z_dim)).sigmoid()
+        if i in SENS_IDX:
+            xs_walk = red_frame(xs_walk)
         xs.append(xs_walk)
 
     #xs = list(torch.cat(xs, 0).data.cpu())

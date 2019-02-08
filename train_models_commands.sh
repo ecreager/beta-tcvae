@@ -1,9 +1,9 @@
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 50. --beta 50. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta50betasens50
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 100. --beta 50. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta50betasens100
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 500. --beta 50. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta50betasens500
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 50. --beta 100. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta100betasens50
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 100. --beta 100. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta100betasens100
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 500. --beta 100. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta100betasens500
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 50. --beta 500. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta500betasens50
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 100. --beta 500. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta500betasens100
-python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 500. --beta 500. --tcvae --num-epochs 200 --log_freq 163 --save sweep2/beta500betasens500
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 1000. --beta 1000. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta1000betasens1000 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 100. --beta 1000. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta1000betasens100 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 500. --beta 1000. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta1000betasens500 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 1000. --beta 100. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta100betasens1000 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 100. --beta 100. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta100betasens100 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 500. --beta 100. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta100betasens500 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 1000. --beta 500. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta500betasens1000 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 100. --beta 500. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta500betasens100 --clf_samps
+python vae_quant.py --dataset celeba --conv --batch-size 1000 --beta_sens 500. --beta 500. --tcvae --num-epochs 100 --log_freq 163 --save sweep3/beta500betasens500 --clf_samps

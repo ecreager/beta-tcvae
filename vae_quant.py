@@ -131,7 +131,8 @@ class ConvDecoder(nn.Module):
 class SensVAE(nn.Module):
     def __init__(self, z_dim, use_cuda=False, prior_dist=dist.Normal(), q_dist=dist.Normal(),
                  include_mutinfo=True, tcvae=False, conv=False, mss=False, n_chan=1, 
-                 sens_idx=[], x_dist=dist.Bernoulli(), a_dist=dist.Bernoulli()):
+                 sens_idx=[], x_dist=dist.Bernoulli(), a_dist=dist.Bernoulli(),
+                 clf_samps=False):
         super(SensVAE, self).__init__()
 
         self.use_cuda = use_cuda
@@ -145,6 +146,7 @@ class SensVAE(nn.Module):
         self.mss = mss
         self.x_dist = x_dist
         self.a_dist = a_dist
+        self.clf_samps = clf_samps
         self.n_chan = n_chan
         self.sens_idx = sens_idx
 
@@ -233,11 +235,15 @@ class SensVAE(nn.Module):
         #logpx = self.x_dist.log_density(utils.logit(x), params=x_params).view(batch_size, -1).sum(1)
         logpx = self.x_dist.log_density(x, params=x_params).view(batch_size, -1).sum(1)
         a_ = a[:, self.sens_idx]  # the attributes we care about modeling
+        if self.clf_samps:  # use samples for classification
+            a_logit = zbs[:, self.sens_idx]
+        else:
+            a_logit = a_params
         with torch.no_grad():
-            clf_accs = (a_params > 0.).float().eq(a_).float().mean(0)
+            clf_accs = (a_logit > 0.).float().eq(a_).float().mean(0)
             for i, s in enumerate(self.sens_idx):
                 metrics.update({'clf_acc{}'.format(s): clf_accs[i]})
-        logpa = self.a_dist.log_density(a_, params=a_params).view(batch_size, -1).sum(1)
+        logpa = self.a_dist.log_density(a_, params=a_logit).view(batch_size, -1).sum(1)
         logpzb = self.prior_dist.log_density(zbs, params=prior_params).view(batch_size, -1).sum(1)
         logqzb_condx = self.q_dist.log_density(zbs, params=zb_params).view(batch_size, -1).sum(1)
 
@@ -466,11 +472,13 @@ def main():
     parser.add_argument('--lambda-anneal', action='store_true')
     parser.add_argument('--mss', action='store_true', help='use the improved minibatch estimator')
     parser.add_argument('--conv', action='store_true')
+    parser.add_argument('--clf_samps', action='store_true')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', action='store_true', help='whether plotting in visdom is desired')
     parser.add_argument('--save', default='betatcvae-celeba')
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
     args = parser.parse_args()
+    print(args)
 
     if not os.path.exists(args.save):
         os.makedirs(args.save)
@@ -505,7 +513,7 @@ def main():
             q_dist=q_dist, include_mutinfo=not args.exclude_mutinfo, 
             tcvae=args.tcvae, conv=args.conv, mss=args.mss, 
             n_chan=3 if args.dataset == 'celeba' else 1, sens_idx=SENS_IDX,
-            x_dist=x_dist, a_dist=a_dist)
+            x_dist=x_dist, a_dist=a_dist, clf_samps=args.clf_samps)
 
     # setup the optimizer
     optimizer = optim.Adam(vae.parameters(), lr=args.learning_rate)

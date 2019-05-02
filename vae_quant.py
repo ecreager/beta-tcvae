@@ -1,9 +1,10 @@
 import argparse
 import os
-import pdb
+from pprint import pprint
 import time
 import math
 from numbers import Number
+from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import torch
 import torch.nn as nn
@@ -12,6 +13,8 @@ import visdom
 from torch.autograd import Variable
 from torch.utils.data import DataLoader
 
+from attr_functions import CELEBA_SENS_IDX
+
 import lib.dist as dist
 import lib.utils as utils
 import lib.datasets as dset
@@ -19,6 +22,8 @@ from lib.flows import FactorialNormalizingFlow
 
 from elbo_decomposition import elbo_decomposition
 from plot_latent_vs_true import plot_vs_gt_shapes, plot_vs_gt_faces, plot_vs_gt_celeba  # noqa: F401
+
+from audit import audit
 
 SENS_IDX = [13, 15, 20]  # celeb-a sens attr; TODO make these an argument
 
@@ -330,18 +335,21 @@ def logsumexp(value, dim=None, keepdim=False):
 
 # for loading and batching datasets
 def setup_data_loaders(args, use_cuda=False):
-    if args.dataset == 'shapes':
-        train_set = dset.Shapes()
-    elif args.dataset == 'faces':
-        train_set = dset.Faces()
-    elif args.dataset == 'celeba':
+    if args.dataset == 'celeba':
+        datasets = {
+                'train': dset.CelebA(mode='train'),
+                'validation': dset.CelebA(mode='validation', train=False),
+                'test': dset.CelebA(mode='test', train=False),
+                }
         train_set = dset.CelebA(mode='train')
     else:
         raise ValueError('Unknown dataset ' + str(args.dataset))
     kwargs = {'num_workers': 4, 'pin_memory': use_cuda}
-    train_loader = DataLoader(dataset=train_set,
+    loaders = {k: DataLoader(dataset=v,
         batch_size=args.batch_size, shuffle=True, **kwargs)
-    return train_loader
+        for k, v in datasets.items()}
+
+    return loaders
 
 
 win_samples = 'samples'
@@ -379,8 +387,6 @@ def display_samples(model, x, vis):
         test_reco_imgs.contiguous().view(-1, model.n_chan, 64, 64).data.cpu(), 10, 2,
         opts={'caption': 'test reconstruction image', 'title': win_test_reco}, win=win_test_reco)
     
-    #pdb.set_trace()
-
     def red_frame(imgs):
         n_pixels = 3  # width of frame
         imgs[:, 0, :n_pixels, :] = 1.
@@ -436,11 +442,7 @@ def plot_tc(train_tc, vis):
 
 
 def anneal_kl(args, vae, iteration):
-    if args.dataset == 'shapes':
-        warmup_iter = 7000
-    elif args.dataset == 'faces':
-        warmup_iter = 2500
-    elif args.dataset == 'celeba':
+    if args.dataset == 'celeba':
         warmup_iter = 2500
 
     if args.lambda_anneal:
@@ -456,8 +458,8 @@ def anneal_kl(args, vae, iteration):
 def main():
     # parse command line arguments
     parser = argparse.ArgumentParser(description="parse args")
-    parser.add_argument('-d', '--dataset', default='shapes', type=str, help='dataset name',
-        choices=['shapes', 'faces', 'celeba'])
+    parser.add_argument('-d', '--dataset', default='celeba', type=str, help='dataset name',
+        choices=['celeba'])
     parser.add_argument('-dist', default='normal', type=str, choices=['normal', 'laplace', 'flow'])
     parser.add_argument('-n', '--num-epochs', default=50, type=int, help='number of training epochs')
     parser.add_argument('-b', '--batch-size', default=2048, type=int, help='batch size')
@@ -477,11 +479,16 @@ def main():
     parser.add_argument('--visdom', action='store_true', help='whether plotting in visdom is desired')
     parser.add_argument('--save', default='betatcvae-celeba')
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
+    parser.add_argument('--audit', action='store_true',
+            help='after each epoch, audit the repr wrt fair clf task')
     args = parser.parse_args()
     print(args)
 
+
     if not os.path.exists(args.save):
         os.makedirs(args.save)
+
+    writer = SummaryWriter(args.save)
 
     log_file = os.path.join(args.save, 'train.log')
     if os.path.exists(log_file):
@@ -489,12 +496,11 @@ def main():
 
     print(vars(args))
     print(vars(args), file=open(log_file, 'w'))
-    #pdb.set_trace()
 
     torch.cuda.set_device(args.gpu)
 
     # data loader
-    train_loader = setup_data_loaders(args, use_cuda=True)
+    loaders = setup_data_loaders(args, use_cuda=True)
 
     # setup the VAE
     if args.dist == 'normal':
@@ -526,8 +532,8 @@ def main():
     train_tc = []
 
     # training loop
-    dataset_size = len(train_loader.dataset)
-    num_iterations = len(train_loader) * args.num_epochs
+    dataset_size = len(loaders['train'].dataset)
+    num_iterations = len(loaders['train']) * args.num_epochs
     iteration = 0
     # initialize loss accumulator
     elbo_running_mean = utils.RunningAverageMeter()
@@ -535,8 +541,8 @@ def main():
     clf_acc_meters = {'clf_acc{}'.format(s): utils.RunningAverageMeter() for s in vae.sens_idx}
 
     while iteration < num_iterations:
-        bar = tqdm(range(len(train_loader)))
-        for i, (x, a) in enumerate(train_loader):
+        bar = tqdm(range(len(loaders['train'])))
+        for i, (x, a) in enumerate(loaders['train']):
             bar.update()
             iteration += 1
             batch_time = time.time()
@@ -566,17 +572,35 @@ def main():
             # report training diagnostics
             if iteration % args.log_freq == 0:
                 train_elbo.append(elbo_running_mean.avg)
+                writer.add_scalar('train_elbo', elbo_running_mean.avg, iteration)
                 train_tc.append(tc_running_mean.avg)
+                writer.add_scalar('train_tc', tc_running_mean.avg, iteration)
                 msg = '[iteration %03d] time: %.2f \tbeta %.2f \tlambda %.2f training ELBO: %.4f (%.4f) training TC %.4f (%.4f)' % (
                     iteration, time.time() - batch_time, vae.beta, vae.lamb,
                     elbo_running_mean.val, elbo_running_mean.avg,
                     tc_running_mean.val, tc_running_mean.avg)
                 for k, v in clf_acc_meters.items():
                     msg += ' {}: {:.2f}'.format(k, v.avg)
+                    writer.add_scalar(k, v.avg, iteration)
                 print(msg)
                 print(msg, file=open(log_file, 'a'))
 
                 vae.eval()
+
+                # audit the latent code for fair classification
+                if args.audit:
+                    audit_metrics = dict() 
+                    for attr_fn_name in CELEBA_SENS_IDX.keys():  #TODO: remove
+                        m = audit(vae, loaders, attr_fn_name, args.latent_dim)
+                        audit_metrics[attr_fn_name] = m
+                    pprint(audit_metrics)
+
+                    for subgroup, metrics in audit_metrics.items():
+                        for metric_name, metric_value in metrics.items():
+                            writer.add_scalar('{}/{}'.format(subgroup, metric_name),
+                                    metric_value, iteration)
+
+
 
                 # plot training and test ELBOs
                 if args.visdom:
@@ -586,8 +610,8 @@ def main():
 
                 utils.save_checkpoint({
                     'state_dict': vae.state_dict(),
-                    'args': args}, args.save, iteration // len(train_loader))
-                eval('plot_vs_gt_' + args.dataset)(vae, train_loader.dataset,
+                    'args': args}, args.save, iteration // len(loaders['train']))
+                eval('plot_vs_gt_' + args.dataset)(vae, loaders['train'].dataset,
                     os.path.join(args.save, 'gt_vs_latent_{:05d}.png'.format(iteration)))
 
     # Report statistics after training
@@ -595,7 +619,7 @@ def main():
     utils.save_checkpoint({
         'state_dict': vae.state_dict(),
         'args': args}, args.save, 0)
-    dataset_loader = DataLoader(train_loader.dataset, batch_size=1000, num_workers=1, shuffle=False)
+    dataset_loader = DataLoader(loaders['train'].dataset, batch_size=1000, num_workers=1, shuffle=False)
     if False:
         logpx, dependence, information, dimwise_kl, analytical_cond_kl, marginal_entropies, joint_entropy = \
             elbo_decomposition(vae, dataset_loader)

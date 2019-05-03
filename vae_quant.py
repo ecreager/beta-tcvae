@@ -475,16 +475,17 @@ def main():
     parser.add_argument('--mss', action='store_true', help='use the improved minibatch estimator')
     parser.add_argument('--conv', action='store_true')
     parser.add_argument('--clf_samps', action='store_true')
+    parser.add_argument('--clf_means', action='store_false', dest='clf_samps')
     parser.add_argument('--gpu', type=int, default=0)
     parser.add_argument('--visdom', action='store_true', help='whether plotting in visdom is desired')
     parser.add_argument('--save', default='betatcvae-celeba')
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
+    parser.add_argument('--audit_freq', default=1000, type=int, help='num iterations per audit')
     parser.add_argument('--audit', action='store_true',
             help='after each epoch, audit the repr wrt fair clf task')
     args = parser.parse_args()
     print(args)
-
-
+    
     if not os.path.exists(args.save):
         os.makedirs(args.save)
 
@@ -587,21 +588,6 @@ def main():
 
                 vae.eval()
 
-                # audit the latent code for fair classification
-                if args.audit:
-                    audit_metrics = dict() 
-                    for attr_fn_name in CELEBA_SENS_IDX.keys():  #TODO: remove
-                        m = audit(vae, loaders, attr_fn_name, args.latent_dim)
-                        audit_metrics[attr_fn_name] = m
-                    pprint(audit_metrics)
-
-                    for subgroup, metrics in audit_metrics.items():
-                        for metric_name, metric_value in metrics.items():
-                            writer.add_scalar('{}/{}'.format(subgroup, metric_name),
-                                    metric_value, iteration)
-
-
-
                 # plot training and test ELBOs
                 if args.visdom:
                     display_samples(vae, x, vis)
@@ -613,6 +599,22 @@ def main():
                     'args': args}, args.save, iteration // len(loaders['train']))
                 eval('plot_vs_gt_' + args.dataset)(vae, loaders['train'].dataset,
                     os.path.join(args.save, 'gt_vs_latent_{:05d}.png'.format(iteration)))
+
+            if iteration % args.audit_freq == 0:
+                # audit the latent code for fair classification
+                vae.eval()
+                if args.audit:
+                    audit_metrics = dict() 
+                    for attr_fn_name in CELEBA_SENS_IDX.keys():
+                        m = audit(vae, loaders, attr_fn_name, args.latent_dim,
+                                args.clf_samps)
+                        audit_metrics[attr_fn_name] = m
+                    pprint(audit_metrics)
+
+                    for subgroup, metrics in audit_metrics.items():
+                        for metric_name, metric_value in metrics.items():
+                            writer.add_scalar('{}/{}'.format(subgroup, metric_name),
+                                    metric_value, iteration)
 
     # Report statistics after training
     vae.eval()

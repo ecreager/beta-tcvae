@@ -114,7 +114,7 @@ def get_repr_fn(config):
         sens_idx = attr_functions.CELEBA_SENS_IDX[config['data']['attr_fn']]
         return repr_functions.get_remove_numbered_dimension_fn(sens_idx)
 
-def audit(vae, loaders, attr_fn_name, latent_dim):
+def audit(vae, loaders, attr_fn_name, latent_dim, samps):
     if not vae.beta_sens > 0.:
         raise ValueError('Auditing only supported for SensVAE')
     vae.eval()
@@ -139,7 +139,7 @@ def audit(vae, loaders, attr_fn_name, latent_dim):
                 },
                 "data": {
                         "name": "celeba_test",
-                        "samps": True,
+                        "samps": samps,
                         "ckpt": "/scratch/gobi1/creager/fair-subspaces/ae_train_factorsensvae4_celeba_20190116_16-57-12-937344/networks_model_199-copy.pth",
                         "attr_fn": attr_fn_name,
                         "input_size": latent_dim,

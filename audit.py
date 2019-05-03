@@ -225,7 +225,8 @@ def audit(vae, loaders, attr_fn_name, latent_dim, samps):
             if config['data']['samps']:
                 z = zs
             else:
-                z = z_params
+                z_mu = z_params.select(-1, 0)
+                z = z_mu
 
         # noise out sensitive dims of latent code
         z = repr_fn(z, None, None)
@@ -291,7 +292,8 @@ def audit(vae, loaders, attr_fn_name, latent_dim, samps):
                 if config['data']['samps']:
                     z = zs
                 else:
-                    z = z_params
+                    z_mu = z_params.select(-1, 0)
+                    z = z_mu
 
             # noise out sensitive dims of latent code
             z = repr_fn(z, None, None)

@@ -1,4 +1,5 @@
 import random
+from lib.models import MLPClassifier
 
 
 from ignite.engine import Engine, Events, create_supervised_evaluator
@@ -13,6 +14,7 @@ from torchvision import transforms
 
 import attr_functions
 import label_functions
+from lib.models import MLPClassifier
 import repr_functions
 from metric_helpers.fair_epoch_metrics import DeltaDP
 
@@ -29,52 +31,6 @@ def check_manual_seed(seed):
     print('Using manual seed: {seed}'.format(seed=seed))
 
 
-def calculate_delta_dp(yhat, a):
-    avg_yhat_a0 = torch.mean(yhat[1 - a].float())
-    avg_yhat_a1 = torch.mean(yhat[a].float())
-    delta_dp = abs(avg_yhat_a0 - avg_yhat_a1)
-    if not torch.isnan(delta_dp):
-        return delta_dp
-    else:
-        return avg_yhat_a0 if not torch.isnan(avg_yhat_a0) else avg_yhat_a1
-
-
-class MLPClassifier(torch.nn.Module): 
-    def __init__(self, n, h, c):
-        super(MLPClassifier, self).__init__()
-        self.model = nn.Sequential(
-                nn.Linear(n, h),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Linear(h, int(h / 2)),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Linear(int(h / 2), c)
-                )
-
-    def forward(self, x, y, a):
-        logits = self.model(x)
-        logprobs = nn.LogSoftmax(dim=1)(logits)
-
-        criterion = torch.nn.NLLLoss()
-        loss = criterion(logprobs, y)
-
-        _, predicted_classes = torch.max(logprobs, 1)
-        accuracy = (predicted_classes == y).float().mean()
-        delta_dp = calculate_delta_dp(predicted_classes, a)
-
-        probs = torch.exp(logprobs)
-        avg_pred = torch.mean(probs, dim=0)[1]
-
-        metrics = {'loss': loss,
-                   'acc': accuracy,
-                   'est_delta_dp': delta_dp,
-                   'avg_pred': avg_pred,
-                   'avg_class': torch.mean(predicted_classes.float()),
-                   'ypred': predicted_classes,
-                   'y': y,
-                   'a': a
-                  }
-
-        return loss, logprobs, metrics
 
 # from configs/main_autoencoder_from_checkpoint_celeba.json
 
@@ -108,6 +64,8 @@ def get_attr_fn(config):
                 .format(config['data']['attr_fn']))
 
 def get_repr_fn(config):
+    if not 'celeba' in config['data']['name']:
+        raise ValueError('Only Celeb-A supported')
     if config['data']['repr_fn'] == 'do_nothing':
         return repr_functions.do_nothing
     else:
@@ -225,7 +183,8 @@ def audit(vae, loaders, attr_fn_name, latent_dim, samps):
             if config['data']['samps']:
                 z = zs
             else:
-                z = z_params
+                z_mu = z_params.select(-1, 0)
+                z = z_mu
 
         # noise out sensitive dims of latent code
         z = repr_fn(z, None, None)
@@ -291,7 +250,8 @@ def audit(vae, loaders, attr_fn_name, latent_dim, samps):
                 if config['data']['samps']:
                     z = zs
                 else:
-                    z = z_params
+                    z_mu = z_params.select(-1, 0)
+                    z = z_mu
 
             # noise out sensitive dims of latent code
             z = repr_fn(z, None, None)

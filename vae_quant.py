@@ -19,11 +19,12 @@ import lib.dist as dist
 import lib.utils as utils
 import lib.datasets as dset
 from lib.flows import FactorialNormalizingFlow
+from lib.models import MLPClassifier
 
 from elbo_decomposition import elbo_decomposition
 from plot_latent_vs_true import plot_vs_gt_shapes, plot_vs_gt_faces, plot_vs_gt_celeba  # noqa: F401
 
-from audit import audit
+from audit import get_label_fn, get_attr_fn, get_repr_fn
 
 SENS_IDX = [13, 15, 20]  # celeb-a sens attr; TODO make these an argument
 
@@ -480,7 +481,6 @@ def main():
     parser.add_argument('--visdom', action='store_true', help='whether plotting in visdom is desired')
     parser.add_argument('--save', default='betatcvae-celeba')
     parser.add_argument('--log_freq', default=200, type=int, help='num iterations per log')
-    parser.add_argument('--audit_freq', default=1000, type=int, help='num iterations per audit')
     parser.add_argument('--audit', action='store_true',
             help='after each epoch, audit the repr wrt fair clf task')
     args = parser.parse_args()
@@ -522,8 +522,34 @@ def main():
             n_chan=3 if args.dataset == 'celeba' else 1, sens_idx=SENS_IDX,
             x_dist=x_dist, a_dist=a_dist, clf_samps=args.clf_samps)
 
+    if args.audit:
+        audit_label_fn = get_label_fn(
+                dict(data=dict(name='celeba', label_fn='H'))
+                )
+        audit_repr_fns = dict()
+        audit_attr_fns = dict()
+        audit_models = dict()
+        audit_train_metrics = dict()
+        for attr_fn_name in CELEBA_SENS_IDX.keys():
+            model = MLPClassifier(args.latent_dim, 1000, 2)
+            model.cuda()
+            audit_models[attr_fn_name] = model
+            audit_repr_fns[attr_fn_name] = get_repr_fn(
+                dict(data=dict(
+                    name='celeba', repr_fn='remove_all', attr_fn=attr_fn_name))
+                )
+            audit_attr_fns[attr_fn_name] = get_attr_fn(
+                dict(data=dict(name='celeba', attr_fn=attr_fn_name))
+                )
+
     # setup the optimizer
     optimizer = optim.Adam(vae.parameters(), lr=args.learning_rate)
+    if args.audit:
+        Adam = optim.Adam
+        audit_optimizers = dict()
+        for k, v in audit_models.items():
+            audit_optimizers[k] = Adam(v.parameters(), lr=args.learning_rate)
+
 
     # setup visdom for visualization
     if args.visdom:
@@ -548,10 +574,16 @@ def main():
             iteration += 1
             batch_time = time.time()
             vae.train()
+            if args.audit:
+                for model in audit_models.values():
+                    model.train()
             #anneal_kl(args, vae, iteration)  # TODO try annealing beta/beta_sens
             vae.beta = args.beta
             vae.beta_sens = args.beta_sens
             optimizer.zero_grad()
+            if args.audit:
+                for opt in audit_optimizers.values():
+                    opt.zero_grad()
             # transfer to GPU
             x = x.cuda(async=True)
             a = a.float()
@@ -570,8 +602,58 @@ def main():
                 clf_acc_meters[s].update(acc.data.item())
             optimizer.step()
 
+            if args.audit:
+                # now re-encode x and take a step to train each audit classifier
+                with torch.no_grad():
+                    zs, z_params = vae.encode(x)
+                    if args.clf_samps:
+                        z = zs
+                    else:
+                        z_mu = z_params.select(-1, 0)
+                        z = z_mu
+                    a_all = a
+                for subgroup, model in audit_models.items():
+                    metrics_dict = {}
+                    # noise out sensitive dims of latent code
+                    z_ = z.clone()
+                    a_all_ = a_all.clone()
+                    # subsample to just sens attr of interest for this subgroup
+                    a_ = audit_attr_fns[subgroup](a_all_)
+                    # noise out sensitive dims for this subgroup
+                    z_ = audit_repr_fns[subgroup](z_, None, None)
+                    y_ = audit_label_fn(a_all_).long()
+
+                    loss, _, metrics = model(z_, y_, a_)
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    metrics_dict.update(loss=loss.detach().item())
+                    for k, v in metrics.items():  # hopefully this works...
+#                        print(k)
+#                        import pdb
+#                        pdb.set_trace()
+                        #if k == 'ypred':
+                        if v.numel() > 1:
+                            k += '-avg'
+                            v = v.float().mean()
+                        metrics_dict.update({k:v.detach().item()})
+#                        if not k in monitoring_tensors:
+#                            metrics_dict.update({k:v.detach().item()})
+#                        else:
+#                            metrics_dict.update({k:v.detach()})
+                    audit_train_metrics[subgroup] = metrics_dict
+
+
+
             # report training diagnostics
             if iteration % args.log_freq == 0:
+                if args.audit:
+                    for subgroup, metrics in audit_train_metrics.items():
+                        for metric_name, metric_value in metrics.items():
+                            writer.add_scalar(
+                                    '{}/{}'.format(subgroup, metric_name),
+                                    metric_value, iteration)
+
                 train_elbo.append(elbo_running_mean.avg)
                 writer.add_scalar('train_elbo', elbo_running_mean.avg, iteration)
                 train_tc.append(tc_running_mean.avg)
@@ -599,22 +681,6 @@ def main():
                     'args': args}, args.save, iteration // len(loaders['train']))
                 eval('plot_vs_gt_' + args.dataset)(vae, loaders['train'].dataset,
                     os.path.join(args.save, 'gt_vs_latent_{:05d}.png'.format(iteration)))
-
-            if iteration % args.audit_freq == 0:
-                # audit the latent code for fair classification
-                vae.eval()
-                if args.audit:
-                    audit_metrics = dict() 
-                    for attr_fn_name in CELEBA_SENS_IDX.keys():
-                        m = audit(vae, loaders, attr_fn_name, args.latent_dim,
-                                args.clf_samps)
-                        audit_metrics[attr_fn_name] = m
-                    pprint(audit_metrics)
-
-                    for subgroup, metrics in audit_metrics.items():
-                        for metric_name, metric_value in metrics.items():
-                            writer.add_scalar('{}/{}'.format(subgroup, metric_name),
-                                    metric_value, iteration)
 
     # Report statistics after training
     vae.eval()

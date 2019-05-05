@@ -1,9 +1,12 @@
 import argparse
+import json
 import os
+import sys
 from pprint import pprint
 import time
 import math
 from numbers import Number
+
 from tensorboardX import SummaryWriter
 from tqdm import tqdm
 import torch
@@ -255,8 +258,8 @@ class SensVAE(nn.Module):
 
         elbo = logpx + logpa + logpzb - logqzb_condx
 
-        if self.beta == 1 and self.include_mutinfo and self.lamb == 0:
-            return elbo, elbo.detach(), metrics
+#        if self.beta == 1 and self.include_mutinfo and self.lamb == 0:
+#            return elbo, elbo.detach(), metrics
 
         # compute log q(z) ~= log 1/(NM) sum_m=1^M q(z|x_m) = - log(MN) + logsumexp_m(q(z|x_m))
         _logqzb = self.q_dist.log_density(
@@ -490,6 +493,7 @@ def main():
         os.makedirs(args.save)
 
     writer = SummaryWriter(args.save)
+    writer.add_text('args', json.dumps(vars(args), sort_keys=True, indent=4))
 
     log_file = os.path.join(args.save, 'train.log')
     if os.path.exists(log_file):
@@ -530,6 +534,7 @@ def main():
         audit_attr_fns = dict()
         audit_models = dict()
         audit_train_metrics = dict()
+        audit_validation_metrics = dict()
         for attr_fn_name in CELEBA_SENS_IDX.keys():
             model = MLPClassifier(args.latent_dim, 1000, 2)
             model.cuda()
@@ -567,6 +572,11 @@ def main():
     tc_running_mean = utils.RunningAverageMeter()
     clf_acc_meters = {'clf_acc{}'.format(s): utils.RunningAverageMeter() for s in vae.sens_idx}
 
+    val_elbo_running_mean = utils.RunningAverageMeter()
+    val_tc_running_mean = utils.RunningAverageMeter()
+    val_clf_acc_meters = {'val_clf_acc{}'.format(s): utils.RunningAverageMeter() for s in vae.sens_idx}
+
+
     while iteration < num_iterations:
         bar = tqdm(range(len(loaders['train'])))
         for i, (x, a) in enumerate(loaders['train']):
@@ -574,9 +584,6 @@ def main():
             iteration += 1
             batch_time = time.time()
             vae.train()
-            if args.audit:
-                for model in audit_models.values():
-                    model.train()
             #anneal_kl(args, vae, iteration)  # TODO try annealing beta/beta_sens
             vae.beta = args.beta
             vae.beta_sens = args.beta_sens
@@ -600,6 +607,8 @@ def main():
             optimizer.step()
 
             if args.audit:
+                for model in audit_models.values():
+                    model.train()
                 # now re-encode x and take a step to train each audit classifier
                 for opt in audit_optimizers.values():
                     opt.zero_grad()
@@ -657,10 +666,74 @@ def main():
                 print(msg, file=open(log_file, 'a'))
 
                 vae.eval()
+                ################################################################
+                # evaluate validation metrics on vae and auditors
+                for x, a in loaders['validation']:
+                    # transfer to GPU
+                    x = x.cuda(async=True)
+                    a = a.float()
+                    a = a.cuda(async=True)
+                    # wrap the mini-batch in a PyTorch Variable
+                    x = Variable(x)
+                    a = Variable(a)
+                    # do ELBO gradient and accumulate loss
+                    obj, elbo, metrics = vae.elbo(x, a, dataset_size)
+                    if utils.isnan(obj).any():
+                        raise ValueError('NaN spotted in objective.')
+                    #
+                    val_elbo_running_mean.update(elbo.mean().data.item())
+                    val_tc_running_mean.update(metrics['tc'])
+                    for (s, meter), (_, acc) in zip(
+                            val_clf_acc_meters.items(), metrics.items()):
+                        val_clf_acc_meters[s].update(acc.data.item())
 
-                # TODO(creager): evaluate validation metrics on vae and auditors
+                if args.audit:
+                    for model in audit_models.values():
+                        model.eval()
+                    with torch.no_grad():
+                        zs, z_params = vae.encode(x)
+                        if args.clf_samps:
+                            z = zs
+                        else:
+                            z_mu = z_params.select(-1, 0)
+                            z = z_mu
+                        a_all = a
+                    for subgroup, model in audit_models.items():
+                        # noise out sensitive dims of latent code
+                        z_ = z.clone()
+                        a_all_ = a_all.clone()
+                        # subsample to just sens attr of interest for this subgroup
+                        a_ = audit_attr_fns[subgroup](a_all_)
+                        # noise out sensitive dims for this subgroup
+                        z_ = audit_repr_fns[subgroup](z_, None, None)
+                        y_ = audit_label_fn(a_all_).long()
 
-                # plot training and test ELBOs
+                        loss, _, metrics = model(z_, y_, a_)
+                        loss.backward()
+                        audit_optimizers[subgroup].step()
+                        metrics_dict = {}
+                        metrics_dict.update(val_loss=loss.detach().item())
+                        for k, v in metrics.items():
+                            k = 'val_' + k  # denote a validation metric
+                            if v.numel() > 1:
+                                k += '-avg'
+                                v = v.float().mean()
+                            metrics_dict.update({k:v.detach().item()})
+                        audit_validation_metrics[subgroup] = metrics_dict
+
+                # after iterating through validation set, write summaries
+                for subgroup, metrics in audit_validation_metrics.items():
+                    for metric_name, metric_value in metrics.items():
+                        writer.add_scalar(
+                                '{}/{}'.format(subgroup, metric_name),
+                                metric_value, iteration)
+                writer.add_scalar('val_elbo', val_elbo_running_mean.avg, iteration)
+                writer.add_scalar('val_tc', val_tc_running_mean.avg, iteration)
+                for k, v in val_clf_acc_meters.items():
+                    writer.add_scalar(k, v.avg, iteration)
+
+                ################################################################
+                # finally, plot training and test ELBOs
                 if args.visdom:
                     display_samples(vae, x, vis)
                     plot_elbo(train_elbo, vis)
@@ -691,6 +764,10 @@ def main():
             'joint_entropy': joint_entropy
         }, os.path.join(args.save, 'elbo_decomposition.pth'))
     eval('plot_vs_gt_' + args.dataset)(vae, dataset_loader.dataset, os.path.join(args.save, 'gt_vs_latent.png'))
+
+    for file in [open(os.path.join(args.save, 'done'), 'w'), sys.stdout]:
+        print('done', file=file)
+
     return vae
 
 

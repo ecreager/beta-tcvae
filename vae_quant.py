@@ -581,9 +581,6 @@ def main():
             vae.beta = args.beta
             vae.beta_sens = args.beta_sens
             optimizer.zero_grad()
-            if args.audit:
-                for opt in audit_optimizers.values():
-                    opt.zero_grad()
             # transfer to GPU
             x = x.cuda(async=True)
             a = a.float()
@@ -604,6 +601,8 @@ def main():
 
             if args.audit:
                 # now re-encode x and take a step to train each audit classifier
+                for opt in audit_optimizers.values():
+                    opt.zero_grad()
                 with torch.no_grad():
                     zs, z_params = vae.encode(x)
                     if args.clf_samps:
@@ -613,7 +612,6 @@ def main():
                         z = z_mu
                     a_all = a
                 for subgroup, model in audit_models.items():
-                    metrics_dict = {}
                     # noise out sensitive dims of latent code
                     z_ = z.clone()
                     a_all_ = a_all.clone()
@@ -624,26 +622,16 @@ def main():
                     y_ = audit_label_fn(a_all_).long()
 
                     loss, _, metrics = model(z_, y_, a_)
-                    optimizer.zero_grad()
                     loss.backward()
-                    optimizer.step()
+                    audit_optimizers[subgroup].step()
+                    metrics_dict = {}
                     metrics_dict.update(loss=loss.detach().item())
-                    for k, v in metrics.items():  # hopefully this works...
-#                        print(k)
-#                        import pdb
-#                        pdb.set_trace()
-                        #if k == 'ypred':
+                    for k, v in metrics.items():
                         if v.numel() > 1:
                             k += '-avg'
                             v = v.float().mean()
                         metrics_dict.update({k:v.detach().item()})
-#                        if not k in monitoring_tensors:
-#                            metrics_dict.update({k:v.detach().item()})
-#                        else:
-#                            metrics_dict.update({k:v.detach()})
                     audit_train_metrics[subgroup] = metrics_dict
-
-
 
             # report training diagnostics
             if iteration % args.log_freq == 0:
@@ -669,6 +657,8 @@ def main():
                 print(msg, file=open(log_file, 'a'))
 
                 vae.eval()
+
+                # TODO(creager): evaluate validation metrics on vae and auditors
 
                 # plot training and test ELBOs
                 if args.visdom:
